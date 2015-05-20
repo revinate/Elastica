@@ -57,4 +57,11 @@ class Missing extends AbstractFilter
     {
         return $this->setParam('null_value', (bool) $nullValue);
     }
+
+    /**
+     * @return bool
+     */
+    public function isSupportingCache() {
+        return false;
+    }
 }
