@@ -10,7 +10,6 @@ use Elastica\Request;
 use Elastica\Response;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\TransferException;
-use GuzzleHttp\Stream\Stream;
 
 /**
  * Elastica Guzzle Transport object.
@@ -71,31 +70,40 @@ class Guzzle extends AbstractTransport
             $options['proxy'] = $proxy;
         }
 
-        $req = $client->createRequest($request->getMethod(), $this->_getActionPath($request), $options);
-        $req->setHeaders($connection->hasConfig('headers') ? $connection->getConfig('headers') : array());
+            $requestMethod = $request->getMethod();
+            $data = $request->getData();
+            if (isset($data) && !empty($data)) {
+                // if there's any post data, set the request method to be post
+                if ($request->getMethod() == Request::GET) {
+                    $requestMethod = Request::POST;
+                }
 
-        $data = $request->getData();
-        if (!empty($data) || '0' === $data) {
-            if ($req->getMethod() == Request::GET) {
-                $req->setMethod(Request::POST);
-            }
+                if ($this->hasParam('postWithRequestBody') && $this->getParam('postWithRequestBody') == true) {
+                    $request->setMethod(Request::POST);
+                    $requestMethod = Request::POST;
+                }
 
-            if ($this->hasParam('postWithRequestBody') && $this->getParam('postWithRequestBody') == true) {
-                $request->setMethod(Request::POST);
-                $req->setMethod(Request::POST);
+                if (is_array($data)) {
+                    $content = JSON::stringify($data, 'JSON_ELASTICSEARCH');
+                } else {
+                    $content = $data;
+                }
+                $options['body'] = $content;
             }
-
-            if (is_array($data)) {
-                $content = JSON::stringify($data, 'JSON_ELASTICSEARCH');
-            } else {
-                $content = $data;
-            }
-            $req->setBody(Stream::factory($content));
-        }
+            $options['headers'] = $connection->hasConfig('headers') ? $connection->getConfig('headers'): array();
 
         try {
             $start = microtime(true);
-            $res = $client->send($req);
+            $coRoutine = \Icicle\Coroutine\create(function() use ($client, $requestMethod, $connection, $request, $options) {
+                try {
+                    /** @var Promise $promise */
+                    $promise = (yield \Icicle\Awaitable\resolve($client->requestAsync($requestMethod, $this->_getBaseUrl($connection) . $this->_getActionPath($request), $options)));
+                    yield \Icicle\Awaitable\resolve($promise->wait(true));
+                } catch (\Exception $e) {
+                    yield \Icicle\Awaitable\reject($e);
+                }
+            });
+            $res = $coRoutine->wait();
             $end = microtime(true);
         } catch (TransferException $ex) {
             throw new GuzzleException($ex, $request, new Response($ex->getMessage()));
@@ -131,11 +139,15 @@ class Guzzle extends AbstractTransport
      */
     protected function _getGuzzleClient($baseUrl, $persistent = true)
     {
-        if (!$persistent || !self::$_guzzleClientConnection) {
+        if (!self::$_guzzleClientConnection) {
             self::$_guzzleClientConnection = new Client(array('base_url' => $baseUrl));
         }
 
         return self::$_guzzleClientConnection;
+    }
+
+    public function setGuzzleClient($client) {
+        self::$_guzzleClientConnection = $client;
     }
 
     /**
